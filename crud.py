@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
 import models
 import schemas
+import security # <-- NEW: Import our hashlib security functions
 
 # --- User CRUD Functions ---
 def get_user(db: Session, user_id: int):
@@ -13,9 +14,15 @@ def get_users(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.User).offset(skip).limit(limit).all()
 
 def create_user(db: Session, user: schemas.UserCreate):
-    # In a real app, you would hash the password properly.
-    fake_hashed_password = user.password + "notreallyhashed"
-    db_user = models.User(email=user.email, hashed_password=fake_hashed_password)
+    # --- UPDATED: Use hashlib with salt ---
+    # 1. Generate a unique salt for this user
+    salt = security.get_random_salt()
+    # 2. Hash the password using the generated salt
+    hashed_password = security.hash_password(user.password, salt)
+    # 3. Create the user model with email, hashed password, AND the salt
+    db_user = models.User(email=user.email, hashed_password=hashed_password, salt=salt)
+    # --- END UPDATE ---
+
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
@@ -23,6 +30,7 @@ def create_user(db: Session, user: schemas.UserCreate):
 
 # --- Simulation CRUD Functions ---
 def get_simulations(db: Session, skip: int = 0, limit: int = 100):
+    # This will be updated later to filter by user
     return db.query(models.Simulation).offset(skip).limit(limit).all()
 
 def create_user_simulation(db: Session, simulation: schemas.SimulationCreate, user_id: int):
@@ -32,7 +40,7 @@ def create_user_simulation(db: Session, simulation: schemas.SimulationCreate, us
     db.refresh(db_simulation)
     return db_simulation
 
-# --- NEW: Material CRUD Functions ---
+# --- Material CRUD Functions ---
 def get_materials_by_user(db: Session, user_id: int, skip: int = 0, limit: int = 100):
     return db.query(models.Material).filter(models.Material.owner_id == user_id).offset(skip).limit(limit).all()
 
@@ -50,7 +58,7 @@ def delete_material(db: Session, material_id: int):
         db.commit()
     return db_material
 
-# --- NEW: Tool CRUD Functions ---
+# --- Tool CRUD Functions ---
 def get_tools_by_user(db: Session, user_id: int, skip: int = 0, limit: int = 100):
     return db.query(models.Tool).filter(models.Tool.owner_id == user_id).offset(skip).limit(limit).all()
 
