@@ -1,128 +1,111 @@
-import os
-import subprocess
-import json
-import shutil
+import subprocess, json, os, shutil
 from celery import Celery
-
-# Import database session, models
 from database import SessionLocal
-import models # Make sure models are imported so Celery knows about them
+import models
 
-# --- Celery Configuration ---
-# Use the Redis container we started as the broker and result backend
-# The broker holds the queue of tasks waiting to run.
-# The backend stores the results of completed tasks (optional but useful).
-redis_url = "redis://localhost:6379/0" # /0 selects database 0 in Redis
-
-celery_app = Celery(
-    "tasks",            # Name of the Celery application
-    broker=redis_url,
-    backend=redis_url,
-    include=['worker']  # Tells Celery to look for tasks in this file ('worker.py')
+# Configure Celery
+# Assumes Redis is running on localhost:6379
+celery = Celery(
+    'tasks',
+    broker='redis://localhost:6379/0',
+    backend='redis://localhost:6379/0'
 )
 
-# Optional Celery configuration settings
-celery_app.conf.update(
-    task_serializer='json',      # Use json for task messages
-    accept_content=['json'],     # Accept json content
-    result_serializer='json',    # Use json for results
-    timezone='UTC',              # Use UTC timezone
-    enable_utc=True,
-    broker_connection_retry_on_startup=True # Attempt reconnect if Redis isn't ready immediately
+# Set Celery to use 'json' serializer
+celery.conf.update(
+    task_serializer='json',
+    result_serializer='json',
+    accept_content=['json']
 )
 
-# --- Celery Task Definition ---
-@celery_app.task(name="run_simulation_task") # Give the task a specific name
-def run_simulation_celery_task(simulation_id: int, run_dir: str):
+@celery.task
+def run_simulation_task(simulation_id, run_dir):
     """
-    Celery task to run the simulation engine in Docker.
-    This replaces the old FastAPI BackgroundTasks function.
+    Celery task to run a simulation in a Docker container.
     """
-    # Create a new database session specific to this task
+    # Create a new, independent database session for the worker
     db = SessionLocal()
+    
     try:
-        # Check if simulation exists (important as task runs independently)
-        sim = db.query(models.Simulation).filter(models.Simulation.id == simulation_id).first()
-        if not sim:
-             print(f"Error [Celery]: Simulation ID {simulation_id} not found.")
-             # Consider raising an error or returning a specific status
-             return {"status": "ERROR", "detail": f"Simulation ID {simulation_id} not found."}
+        # --- 1. Get Simulation & Update Status ---
+        db_simulation = db.query(models.Simulation).filter(models.Simulation.id == simulation_id).first()
+        if not db_simulation:
+            print(f"Error: Simulation ID {simulation_id} not found.")
+            return
 
-        # Update status to RUNNING
-        print(f"Starting simulation task for ID: {simulation_id} in dir: {run_dir}")
-        db.query(models.Simulation).filter(models.Simulation.id == simulation_id).update({"status": "RUNNING"})
+        db_simulation.status = "RUNNING"
         db.commit()
 
-        # Define and run the Docker command
-        docker_command = ["docker", "run", "--rm", "-v", f"{os.path.abspath(run_dir)}:/data", "edgepredict-engine-v2"]
-        # Use a reasonable timeout (e.g., 1 hour = 3600 seconds)
-        timeout_seconds = 3600
-        result = subprocess.run(
-            docker_command,
-            capture_output=True,
+        # --- 2. Run Docker Container ---
+        docker_command = [
+            "docker", "run", "--rm",
+            "-v", f"{os.path.abspath(run_dir)}:/data",
+            "edgepredict-engine-v2", # This is the name of your simulation engine Docker image
+            "/data/input.json" # Argument passed to the engine's main.cpp
+        ]
+
+        print(f"Running command: {' '.join(docker_command)}")
+        
+        process = subprocess.run(
+            docker_command, 
+            capture_output=True, 
             text=True,
-            check=False, # Don't raise error immediately, check returncode instead
-            timeout=timeout_seconds
+            encoding='utf-8', 
+            errors='ignore',
+            cwd=os.path.abspath(run_dir)
         )
 
-        # Process results based on Docker exit code
-        if result.returncode == 0:
+        # --- 3. Process Results ---
+        if process.returncode == 0:
+            print(f"Simulation {simulation_id} completed successfully.")
             output_file_path = os.path.join(run_dir, "output.json")
+            
             if os.path.exists(output_file_path):
-                 with open(output_file_path, "r") as f:
-                     results_data = json.load(f)
-                 db.query(models.Simulation).filter(models.Simulation.id == simulation_id).update({
-                     "status": "COMPLETED",
-                     "results": json.dumps(results_data) # Store results as JSON string
-                 })
-                 print(f"Simulation COMPLETED for ID: {simulation_id}")
-                 task_result = {"status": "COMPLETED"}
+                with open(output_file_path, 'r') as f:
+                    results_json_string = f.read()
+                
+                db_simulation.status = "COMPLETED"
+                db_simulation.results = results_json_string
+                db.commit()
             else:
-                 print(f"Simulation OK for ID {simulation_id} but output.json missing!")
-                 db.query(models.Simulation).filter(models.Simulation.id == simulation_id).update({"status": "FAILED"})
-                 task_result = {"status": "FAILED", "detail": "Output file missing"}
+                print(f"Error: output.json not found for simulation {simulation_id}.")
+                db_simulation.status = "FAILED"
+                db_simulation.results = '{"error": "Simulation ran but output.json was not generated."}'
+                db.commit()
         else:
-            # Docker container failed
-            stderr_output = result.stderr or "No stderr captured."
-            print(f"Simulation FAILED for ID: {simulation_id}. Code: {result.returncode}. Stderr: {stderr_output}")
-            db.query(models.Simulation).filter(models.Simulation.id == simulation_id).update({"status": "FAILED"})
-            task_result = {"status": "FAILED", "detail": f"Engine exited with code {result.returncode}. Error: {stderr_output[:500]}"} # Limit error length
-
-        db.commit() # Commit final status update
-        return task_result # Return task result
-
-    except subprocess.TimeoutExpired:
-        print(f"Simulation TIMED OUT for ID: {simulation_id}")
-        db.query(models.Simulation).filter(models.Simulation.id == simulation_id).update({"status": "FAILED"})
-        db.commit()
-        return {"status": "FAILED", "detail": "Simulation timed out"}
-    except Exception as e:
-        print(f"Unexpected ERROR during simulation task for ID {simulation_id}: {e}")
-        # Rollback any partial changes and set status to FAILED
-        db.rollback()
-        try:
-            # Try one more time to set status to FAILED
-            db.query(models.Simulation).filter(models.Simulation.id == simulation_id).update({"status": "FAILED"})
+            # Simulation failed
+            print(f"Error running simulation {simulation_id}. Return code: {process.returncode}")
+            print(f"STDOUT: {process.stdout}")
+            print(f"STDERR: {process.stderr}")
+            db_simulation.status = "FAILED"
+            db_simulation.results = json.dumps({
+                "error": "Simulation engine failed to run.",
+                "returncode": process.returncode,
+                "stdout": process.stdout,
+                "stderr": process.stderr
+            })
             db.commit()
-        except Exception as db_err:
-            print(f"CRITICAL: Failed to update simulation status to FAILED for ID {simulation_id} after error: {db_err}")
-            db.rollback()
-        # It's good practice to re-raise the exception or return detailed error info
-        # raise e # Option 1: Re-raise to mark task as failed in Celery monitor
-        return {"status": "FAILED", "detail": f"Unexpected error: {str(e)}"} # Option 2: Return error status
+
+    except Exception as e:
+        print(f"A critical error occurred in the Celery task for simulation {simulation_id}: {e}")
+        try:
+            db_simulation.status = "FAILED"
+            db_simulation.results = json.dumps({"error": f"Celery worker error: {str(e)}"})
+            db.commit()
+        except Exception as db_e:
+            print(f"Failed to even update simulation status to FAILED: {db_e}")
+            db.rollback() # Rollback any changes if update fails
+            
     finally:
-        db.close() # Ensure the session is closed
-        # Clean up temporary run directory
+        # --- 4. Clean up Run Directory ---
+        
+        # --- FIX: RE-ENABLE CLEANUP ---
         if os.path.exists(run_dir):
             try:
                 shutil.rmtree(run_dir)
-                print(f"Cleaned up run directory: {run_dir}")
-            except Exception as cleanup_err:
-                print(f"Error cleaning up run directory {run_dir}: {cleanup_err}")
-
-# You can add other tasks here if needed
-
-if __name__ == '__main__':
-    # This allows running the worker directly (optional)
-    # The command line `celery -A worker.celery_app worker --loglevel=info` is preferred
-    celery_app.start()
+                print(f"Cleaned up {run_dir}")
+            except Exception as e:
+                print(f"Error cleaning up directory {run_dir}: {e}")
+        
+        # Always close the session
+        db.close()
