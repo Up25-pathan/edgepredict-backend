@@ -1,29 +1,50 @@
-This is the Python-based backend for the EdgePredict simulation platform, built with FastAPI.
+EdgePredict Backend API
 
-Setup
-Create a Virtual Environment (Recommended)
+This is the central backend service for the EdgePredict SaaS platform. It is a Python-based API built with FastAPI, responsible for user authentication, database management, and dispatching simulation jobs to the C++ engine.
 
-python -m venv venv
-source venv/bin/activate  
-`venv\Scripts\activate`  # On Windows, use
+This backend connects the React frontend to the C++ simulation engine via a Celery task queue.
 
-Install Dependencies
-Install all the required libraries from the requirements.txt file.
+# How to Run the 
 
-pip install -r requirements.txt
+To run the entire platform, you must start 4 separate services in 4 separate terminals.
 
-Running the Server
-To run the development server, use uvicorn. The --reload flag will automatically restart the server whenever you make changes to the code.
+Terminal 1: Start Redis
 
+Start the Redis message broker using Docker.
+
+docker run -d --name edgepredict-redis -p 6379:6379 redis
+
+
+(If it's already created, just run: docker start edgepredict-redis)
+
+Terminal 2: Start the FastAPI Server
+
+This runs the main API that the React app talks to.
+
+# In the edgepredict-backend folder
+.\venv\Scripts\activate
 uvicorn main:app --reload
+
 
 The API will be available at http://127.0.0.1:8000.
 
-You can access the interactive API documentation (provided automatically by FastAPI) by navigating to http://127.0.0.1:8000/docs in your browser.
+Terminal 3: Start the Celery Worker
 
-├── database.py         # New: Handles database connection.
-├── main.py             # Updated: Will include new /reports endpoints.
-├── models.py           # New: Defines our database tables.
-├── schemas.py          # New: Defines the shape of our API data.
-├── requirements.txt    # Updated: Will add database libraries.
-└── README.md
+This is the service that listens for and runs the simulation jobs.
+
+# In the edgepredict-backend folder
+.\venv\Scripts\activate
+celery -A worker.celery worker --loglevel=info -P solo
+
+
+(Note: -P solo is recommended for Windows compatibility)
+
+Terminal 4: Start the React Frontend
+
+This serves the user interface.
+
+# In the edgepredict-ui folder
+npm start
+
+
+The app will be available at http://localhost:3000.
