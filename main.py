@@ -10,8 +10,8 @@ import crud, models, schemas, security
 from database import SessionLocal, engine
 from datetime import timedelta
 
-# Import the Celery task
-from worker import run_simulation_celery_task
+# --- FIX: Import the correct function name ---
+from worker import run_simulation_task 
 
 # Create DB tables if they don't exist
 # Note: This won't update existing tables. Use migration tools for that.
@@ -88,6 +88,7 @@ def create_simulation(
     simulation_parameters: str = Form(...),
     physics_parameters: str = Form(...),
     material_properties: str = Form(...),
+    cfd_parameters: str = Form(...),
     tool_id: Optional[int] = Form(None),
     tool_file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
@@ -109,13 +110,18 @@ def create_simulation(
 
 
     actual_tool_id = tool_id
+    tool_filename = None # <-- Variable to hold the tool's name
+
     # --- Handle Tool Upload (if provided) ---
     if tool_file:
         # Note: tool_type would typically be part of the upload form as well
         new_tool_form_data = schemas.ToolCreate(name=f"{name} (Uploaded Tool)", tool_type="Other") # Default type for now
         upload_dir = "tool_library_files"; os.makedirs(upload_dir, exist_ok=True)
-        safe_filename = file.filename.replace("..", "").replace("/", "").replace("\\", "")
-        file_path = os.path.join(upload_dir, f"{uuid.uuid4()}_{safe_filename}")
+        
+        safe_filename = tool_file.filename.replace("..", "").replace("/", "").replace("\\", "")
+        # Use a UUID in the filename to prevent conflicts
+        tool_filename = f"{uuid.uuid4()}_{safe_filename}" 
+        file_path = os.path.join(upload_dir, tool_filename)
 
         try:
             with open(file_path, "wb") as buffer: shutil.copyfileobj(tool_file.file, buffer)
@@ -140,8 +146,7 @@ def create_simulation(
 
     # --- Prepare Run Directory ---
     run_dir = f"temp_run_{uuid.uuid4()}"; os.makedirs(run_dir, exist_ok=True)
-    destination_stl_path = os.path.join(run_dir, "tool.stl")
-
+    
     db_tool = db.query(models.Tool).filter(models.Tool.id == actual_tool_id).first()
     if not db_tool:
         # This shouldn't happen if commit was successful, but check anyway
@@ -150,8 +155,14 @@ def create_simulation(
     if db_tool.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized to use the selected tool.")
 
+    if not tool_filename:
+        # Get the filename from the tool's file_path
+        tool_filename = os.path.basename(db_tool.file_path)
+
+    destination_tool_path = os.path.join(run_dir, tool_filename)
+
     try:
-        shutil.copy(db_tool.file_path, destination_stl_path)
+        shutil.copy(db_tool.file_path, destination_tool_path)
     except Exception as e:
         if os.path.exists(run_dir): shutil.rmtree(run_dir) # Clean up run dir on copy error
         raise HTTPException(status_code=500, detail=f"Failed to copy tool file to run directory: {e}")
@@ -162,7 +173,11 @@ def create_simulation(
             "simulation_parameters": json.loads(simulation_parameters),
             "physics_parameters": json.loads(physics_parameters),
             "material_properties": json.loads(material_properties),
-            "file_paths": {"tool_geometry": "tool.stl", "output_results": "output.json"}
+            "cfd_parameters": json.loads(cfd_parameters),
+            "file_paths": {
+                "tool_geometry": tool_filename, 
+                "output_results": "output.json"
+            }
         }
         with open(os.path.join(run_dir, "input.json"), "w") as f: json.dump(input_data, f, indent=4)
     except json.JSONDecodeError:
@@ -174,8 +189,8 @@ def create_simulation(
 
     # --- Dispatch to Celery ---
     try:
-        # Send task to Celery queue
-        run_simulation_celery_task.delay(db_simulation.id, run_dir)
+        # --- FIX: Call the correct function name ---
+        run_simulation_task.delay(db_simulation.id, run_dir)
         print(f"Sent simulation task to Celery for ID: {db_simulation.id}")
     except Exception as e:
          # If sending to Celery fails, try to clean up and mark simulation as failed
@@ -238,8 +253,10 @@ def create_tool(
     current_user: models.User = Depends(get_current_user)
 ):
     upload_dir = "tool_library_files"; os.makedirs(upload_dir, exist_ok=True)
+    # --- Use a UUID in the filename to prevent conflicts ---
     safe_filename = file.filename.replace("..", "").replace("/", "").replace("\\", "")
-    file_path = os.path.join(upload_dir, f"{uuid.uuid4()}_{safe_filename}")
+    unique_filename = f"{uuid.uuid4()}_{safe_filename}"
+    file_path = os.path.join(upload_dir, unique_filename)
 
     try:
         with open(file_path, "wb") as f: shutil.copyfileobj(file.file, f)
@@ -309,4 +326,3 @@ def delete_tool(
          raise HTTPException(status_code=500, detail=f"Could not delete tool: {e}")
 
 # --- End Tool Endpoints ---
-
