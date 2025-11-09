@@ -1,4 +1,4 @@
-import json # <-- 1. IMPORT THE JSON LIBRARY
+import json
 from sqlalchemy.orm import Session
 import models, schemas, security
 
@@ -14,8 +14,13 @@ def get_users(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.User).offset(skip).limit(limit).all()
 
 def create_user(db: Session, user: schemas.UserCreate):
-    salt = security.generate_salt()
+    # --- THIS WAS THE BUG ---
+    # It was 'security.generate_salt()', but the function is 'get_random_salt'
+    salt = security.get_random_salt() 
+    # --- END FIX ---
+    
     hashed_password = security.hash_password(user.password, salt)
+    
     db_user = models.User(
         email=user.email, 
         hashed_password=hashed_password, 
@@ -41,16 +46,14 @@ def get_materials_by_user(db: Session, user_id: int):
     return db.query(models.Material).filter(models.Material.owner_id == user_id).all()
 
 def create_user_material(db: Session, material: schemas.MaterialCreate, user_id: int):
-    # --- 2. THE FIX IS HERE ---
     # Convert the 'properties' dictionary into a JSON string before saving
     properties_json_string = json.dumps(material.properties)
     
     db_material = models.Material(
         name=material.name, 
-        properties=properties_json_string, # <-- Use the string version
+        properties=properties_json_string, # Use the string version
         owner_id=user_id
     )
-    # --- End Fix ---
     
     db.add(db_material)
     db.commit()
