@@ -1,24 +1,23 @@
+import os
 from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, declarative_base
+from dotenv import load_dotenv
 
-# --- NEW: PostgreSQL Connection String ---
-# Replace these with your actual database credentials
-DB_USER = "postgres"
-DB_PASSWORD = "12345678"  # <-- THIS IS THE LINE TO FIX
-DB_HOST = "localhost"
-DB_PORT = "5432"
-DB_NAME = "edgepredict_db"
+# Load environment variables
+load_dotenv()
 
-SQLALCHEMY_DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+# Get DB URL from env, default to local SQLite if not set
+SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./edgepredict.db")
 
-# --- REMOVED: Old SQLite Connection String ---
-# SQLALCHEMY_DATABASE_URL = "sqlite:///./sql_app.db"
+# Handle SQLite specific connect_args
+connect_args = {}
+if "sqlite" in SQLALCHEMY_DATABASE_URL:
+    connect_args = {"check_same_thread": False}
 
-# The 'connect_args' was only for SQLite and is no longer needed
-engine = create_engine(SQLALCHEMY_DATABASE_URL)
-
-# --- No other changes needed below this line ---
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL, 
+    connect_args=connect_args
+)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
