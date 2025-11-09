@@ -2,13 +2,19 @@ import subprocess, json, os, shutil
 from celery import Celery
 from database import SessionLocal
 import models
+from dotenv import load_dotenv
 
-# Configure Celery
-# Assumes Redis is running on localhost:6379
+# Load environment variables
+load_dotenv()
+
+# Get Redis URL from env
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+# Configure Celery with the loaded URL
 celery = Celery(
     'tasks',
-    broker='redis://localhost:6379/0',
-    backend='redis://localhost:6379/0'
+    broker=REDIS_URL,
+    backend=REDIS_URL
 )
 
 # Set Celery to use 'json' serializer
@@ -40,19 +46,21 @@ def run_simulation_task(simulation_id, run_dir):
         docker_command = [
             "docker", "run", "--rm",
             "-v", f"{os.path.abspath(run_dir)}:/data",
-            "edgepredict-engine-v2", # This is the name of your simulation engine Docker image
-            "/data/input.json" # Argument passed to the engine's main.cpp
+            "edgepredict-engine-v2", # Updated to match your engine version name
+            "/data/input.json"
         ]
 
         print(f"Running command: {' '.join(docker_command)}")
         
+        # Use a long timeout (e.g., 1 hour) to prevent hanging forever if engine crashes silently
         process = subprocess.run(
             docker_command, 
             capture_output=True, 
             text=True,
             encoding='utf-8', 
             errors='ignore',
-            cwd=os.path.abspath(run_dir)
+            cwd=os.path.abspath(run_dir),
+            timeout=3600 # 1 hour timeout
         )
 
         # --- 3. Process Results ---
@@ -86,6 +94,11 @@ def run_simulation_task(simulation_id, run_dir):
             })
             db.commit()
 
+    except subprocess.TimeoutExpired:
+        print(f"Simulation {simulation_id} timed out.")
+        db_simulation.status = "FAILED"
+        db_simulation.results = json.dumps({"error": "Simulation timed out after 1 hour."})
+        db.commit()
     except Exception as e:
         print(f"A critical error occurred in the Celery task for simulation {simulation_id}: {e}")
         try:
@@ -94,18 +107,21 @@ def run_simulation_task(simulation_id, run_dir):
             db.commit()
         except Exception as db_e:
             print(f"Failed to even update simulation status to FAILED: {db_e}")
-            db.rollback() # Rollback any changes if update fails
+            db.rollback()
             
     finally:
         # --- 4. Clean up Run Directory ---
-        
-        # --- FIX: RE-ENABLE CLEANUP ---
+        # Only clean up if it succeeded. If it failed, keep it for debugging.
         if os.path.exists(run_dir):
-            try:
-                shutil.rmtree(run_dir)
-                print(f"Cleaned up {run_dir}")
-            except Exception as e:
-                print(f"Error cleaning up directory {run_dir}: {e}")
+             # Re-fetch to get latest status in case of weird race conditions
+             db.refresh(db_simulation)
+             if db_simulation.status == "COMPLETED":
+                 try:
+                     shutil.rmtree(run_dir)
+                     print(f"Cleaned up {run_dir}")
+                 except Exception as e:
+                     print(f"Error cleaning up directory {run_dir}: {e}")
+             else:
+                 print(f"Keeping run directory {run_dir} for debugging (Status: {db_simulation.status})")
         
-        # Always close the session
         db.close()
