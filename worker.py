@@ -46,13 +46,12 @@ def run_simulation_task(simulation_id, run_dir):
         docker_command = [
             "docker", "run", "--rm",
             "-v", f"{os.path.abspath(run_dir)}:/data",
-            "edgepredict-engine-v2", # Updated to match your engine version name
+            "edgepredict-engine-v3", # Uses your latest engine
             "/data/input.json"
         ]
 
         print(f"Running command: {' '.join(docker_command)}")
         
-        # Use a long timeout (e.g., 1 hour) to prevent hanging forever if engine crashes silently
         process = subprocess.run(
             docker_command, 
             capture_output=True, 
@@ -60,7 +59,7 @@ def run_simulation_task(simulation_id, run_dir):
             encoding='utf-8', 
             errors='ignore',
             cwd=os.path.abspath(run_dir),
-            timeout=3600 # 1 hour timeout
+            timeout=3600
         )
 
         # --- 3. Process Results ---
@@ -110,17 +109,16 @@ def run_simulation_task(simulation_id, run_dir):
             db.rollback()
             
     finally:
-        # --- 4. Clean up Run Directory ---
-        # Only clean up if it succeeded. If it failed, keep it for debugging.
+        # --- 4. Clean up Run Directory (DISABLED FOR DEBUGGING) ---
         if os.path.exists(run_dir):
-             # Re-fetch to get latest status in case of weird race conditions
              db.refresh(db_simulation)
              if db_simulation.status == "COMPLETED":
-                 try:
-                     shutil.rmtree(run_dir)
-                     print(f"Cleaned up {run_dir}")
-                 except Exception as e:
-                     print(f"Error cleaning up directory {run_dir}: {e}")
+                 # try:
+                 #     shutil.rmtree(run_dir)
+                 #     print(f"Cleaned up {run_dir}")
+                 # except Exception as e:
+                 #     print(f"Error cleaning up directory {run_dir}: {e}")
+                 print(f"DEBUG MODE: Keeping run directory {run_dir} for inspection.")
              else:
                  print(f"Keeping run directory {run_dir} for debugging (Status: {db_simulation.status})")
         
