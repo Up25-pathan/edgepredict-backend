@@ -2,12 +2,13 @@ import subprocess, json, uuid, os, shutil, asyncio
 from typing import List, Optional
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from fastapi.responses import FileResponse
 import crud, models, schemas, security
 from database import SessionLocal, engine
-from datetime import timedelta
+# --- IMPORT datetime from datetime ---
+from datetime import timedelta, datetime 
 from worker import run_simulation_task
 from dotenv import load_dotenv
 import httpx
@@ -31,7 +32,7 @@ def get_db():
     finally:
         db.close()
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+oauth2_scheme = models.oauth2_scheme
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> models.User:
     credentials_exception = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate credentials", headers={"WWW-Authenticate": "Bearer"})
@@ -39,25 +40,123 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     if email is None: raise credentials_exception
     user = crud.get_user_by_email(db, email=email)
     if user is None: raise credentials_exception
+    
+    # --- FIX: Use naive datetime ---
+    if not user.is_admin and user.subscription_expiry and user.subscription_expiry < datetime.now():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Subscription expired.")
+        
     return user
+
+async def get_current_admin_user(current_user: models.User = Depends(get_current_user)) -> models.User:
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to access this resource."
+        )
+    return current_user
+
+# --- Auth Endpoints ---
 
 @app.post("/token", tags=["Authentication"])
 async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = crud.get_user_by_email(db, email=form_data.username)
     if not user or not security.verify_password(form_data.password, user.hashed_password, user.salt):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password", headers={"WWW-Authenticate": "Bearer"})
+
+    # --- FIX: Use naive datetime ---
+    if not user.is_admin and user.subscription_expiry and user.subscription_expiry < datetime.now():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Your subscription has expired. Please contact support.")
+
     access_token = security.create_access_token(data={"sub": user.email})
     return {"access_token": access_token, "token_type": "bearer"}
-
-@app.post("/users/", response_model=schemas.User, tags=["Users"])
-def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
-    db_user = crud.get_user_by_email(db, email=user.email)
-    if db_user: raise HTTPException(status_code=400, detail="Email already registered")
-    return crud.create_user(db=db, user=user)
 
 @app.get("/users/me/", response_model=schemas.User, tags=["Users"])
 async def read_users_me(current_user: models.User = Depends(get_current_user)):
     return current_user
+
+# --- Access Request Endpoints ---
+
+@app.post("/request-access", response_model=schemas.AccessRequest, tags=["Public"])
+def submit_access_request(request: schemas.AccessRequestCreate, db: Session = Depends(get_db)):
+    return crud.create_access_request(db=db, request=request)
+
+@app.get("/admin/access-requests", response_model=List[schemas.AccessRequest], tags=["Admin"])
+def get_access_requests(
+    skip: int = 0, 
+    limit: int = 100, 
+    db: Session = Depends(get_db), 
+    admin: models.User = Depends(get_current_admin_user)
+):
+    return crud.get_access_requests(db, skip=skip, limit=limit)
+
+@app.patch("/admin/access-requests/{request_id}", response_model=schemas.AccessRequest, tags=["Admin"])
+def update_access_request_status(
+    request_id: int,
+    status: str, 
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin_user)
+):
+    return crud.update_access_request_status(db, request_id, status)
+
+# --- Admin User Management Endpoints ---
+
+@app.post("/admin/users/", response_model=schemas.User, tags=["Admin"])
+def admin_create_user(
+    user: schemas.AdminUserCreate,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin_user)
+):
+    db_user = crud.get_user_by_email(db, email=user.email)
+    if db_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    return crud.admin_create_user(db=db, user=user)
+
+@app.get("/admin/users/", response_model=List[schemas.User], tags=["Admin"])
+def admin_get_all_users(
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin_user)
+):
+    return crud.get_users(db)
+
+@app.patch("/admin/users/{user_id}", response_model=schemas.User, tags=["Admin"])
+def admin_update_user_details(
+    user_id: int,
+    user_update: schemas.AdminUserUpdate,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin_user)
+):
+    db_user = crud.admin_update_user(db, user_id=user_id, user_update=user_update)
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return db_user
+
+@app.post("/admin/users/{user_id}/reset-password", response_model=schemas.User, tags=["Admin"])
+def admin_reset_user_password(
+    user_id: int,
+    password_reset: schemas.AdminUserPasswordReset, # <--- CORRECT
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin_user)
+):
+    db_user = crud.admin_reset_user_password(db, user_id=user_id, new_password=password_reset.new_password)
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return db_user
+    
+@app.delete("/admin/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Admin"])
+def admin_delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin_user)
+):
+    if admin.id == user_id:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account.")
+        
+    db_user = crud.delete_user(db, user_id=user_id)
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return None
+
+# --- Simulation / Tool / Material Endpoints (Existing) ---
 
 @app.post("/simulations/", response_model=schemas.Simulation, tags=["Simulations"])
 def create_simulation(name: str = Form(...), description: str = Form(...), simulation_parameters: str = Form(...), physics_parameters: str = Form(...), material_properties: str = Form(...), cfd_parameters: str = Form(...), tool_id: Optional[int] = Form(None), tool_file: Optional[UploadFile] = File(None), db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -144,47 +243,6 @@ def read_simulation(simulation_id: int, db: Session = Depends(get_db), current_u
     if not db_sim or db_sim.owner_id != current_user.id: raise HTTPException(status_code=403, detail="Not authorized")
     return db_sim
 
-# --- AI Analysis Endpoint (GROQ VERSION) ---
-async def get_ai_analysis(results_json: str, peak_metrics: dict):
-    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-    if not GROQ_API_KEY: return "Error: GROQ_API_KEY missing in .env file."
-    
-    # Groq uses the exact same format as OpenAI
-    URL = "https://api.groq.com/openai/v1/chat/completions"
-    HEADERS = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    system_prompt = "You are EdgePredict AI, an advanced manufacturing intelligence engine. Analyze this metal cutting simulation. Provide 3 strictly formatted sections:\n1. **Executive Summary**\n2. **Critical Insights** (bullet points)\n3. **Optimization Recommendations** (bullet points). Be technical and concise."
-    user_prompt = f"Analyze immediately.\nPEAK METRICS:\n{json.dumps(peak_metrics, indent=2)}\nDATA EXCERPT:\n{results_json[:1500]}\n...\n{results_json[-1500:]}"
-
-    payload = {
-        "model": "openai/gpt-oss-20b", # Fast, free, and good enough for summaries
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": 0.5,
-        "max_tokens": 1024
-    }
-
-    try:
-        print("AI: Calling Groq...")
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(URL, headers=HEADERS, json=payload)
-            
-            if response.status_code != 200:
-                 print(f"\n!!! GROQ ERROR {response.status_code} !!!\nResponse: {response.text}\n")
-                 return f"Error: Groq service unavailable (HTTP {response.status_code}). Check API key."
-            
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
-            
-    except Exception as e:
-        print(f"GROQ CRITICAL FAILURE: {e}")
-        return f"Error: AI analysis failed: {str(e)}"
-
 @app.post("/simulations/{simulation_id}/analyze", tags=["Simulations"])
 async def analyze_simulation(simulation_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     db_sim = db.query(models.Simulation).filter(models.Simulation.id == simulation_id).first()
@@ -205,7 +263,6 @@ async def analyze_simulation(simulation_id: int, db: Session = Depends(get_db), 
             "wear_microns": max((s.get("total_accumulated_wear_m", 0) or 0) for s in ts) * 1e6
         }
         
-        # Call Groq
         analysis = await get_ai_analysis(json.dumps(ts), metrics)
         
         if not analysis.startswith("Error:"):
@@ -215,7 +272,35 @@ async def analyze_simulation(simulation_id: int, db: Session = Depends(get_db), 
         return {"analysis": analysis}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Report generation failed: {e}")
-# --- End AI Endpoint ---
+    
+# --- NEW: Delete Simulation Endpoint ---
+@app.delete("/simulations/{simulation_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Simulations"])
+def delete_simulation(
+    simulation_id: int, 
+    db: Session = Depends(get_db), 
+    current_user: models.User = Depends(get_current_user)
+):
+    # 1. Check existence
+    db_sim = db.query(models.Simulation).filter(models.Simulation.id == simulation_id).first()
+    if not db_sim:
+        raise HTTPException(status_code=404, detail="Simulation not found")
+    
+    # 2. Check ownership
+    if not current_user.is_admin and db_sim.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to delete this simulation")
+
+    # 3. Delete files from disk
+    run_dir = os.path.join("simulation_runs", f"sim_{simulation_id}")
+    if os.path.exists(run_dir):
+        try:
+            shutil.rmtree(run_dir) # Recursively delete folder
+        except Exception as e:
+            print(f"Error deleting simulation files: {e}")
+
+    # 4. Delete from DB
+    crud.delete_simulation(db=db, simulation_id=simulation_id)
+    return None
+# ---------------------------------------    
 
 @app.get("/materials/", response_model=List[schemas.Material], tags=["Materials"])
 def read_materials(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
