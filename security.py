@@ -5,7 +5,6 @@ from typing import Optional
 from jose import JWTError, jwt
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
 # --- Password Hashing & Salting ---
@@ -33,7 +32,6 @@ def verify_password(plain_password: str, hashed_password: str, salt: str) -> boo
 
 
 # --- JWT Token Configuration ---
-# UPDATED: Now loads from .env, with a fallback for local dev only
 SECRET_KEY = os.getenv("SECRET_KEY", "UNSAFE_DEV_KEY_CHANGE_IMMEDIATELY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 # Token lasts for one day
@@ -61,7 +59,6 @@ def decode_access_token(token: str) -> Optional[str]:
         email: Optional[str] = payload.get("sub")
         if email is None:
             return None
-        # We could add more validation here (e.g., check token expiration manually)
         return email
     except JWTError:
         # Token is invalid (expired, wrong signature, etc.)
