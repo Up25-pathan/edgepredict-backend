@@ -1,5 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from typing import Optional, Any
+import datetime
 
 # --- Tool Schemas ---
 class ToolBase(BaseModel):
@@ -7,7 +8,7 @@ class ToolBase(BaseModel):
     tool_type: Optional[str] = None
 
 class ToolCreate(ToolBase):
-    pass # file_path will be handled by the server, not the client
+    pass
 
 class Tool(ToolBase):
     id: int
@@ -15,12 +16,12 @@ class Tool(ToolBase):
     owner_id: int
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # --- Material Schemas ---
 class MaterialBase(BaseModel):
     name: str
-    properties: Any # Will be parsed from a JSON string
+    properties: Any
 
 class MaterialCreate(MaterialBase):
     pass
@@ -28,13 +29,10 @@ class MaterialCreate(MaterialBase):
 class Material(MaterialBase):
     id: int
     owner_id: int
-    
-    # In the response, properties will be a string.
-    # If you parse it in crud, you can change this.
     properties: str 
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # --- Simulation Schemas ---
 class SimulationBase(BaseModel):
@@ -53,22 +51,51 @@ class Simulation(SimulationBase):
     material_properties: Optional[str] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 # --- User Schemas ---
 class UserBase(BaseModel):
-    email: str
+    email: EmailStr
 
 class UserCreate(UserBase):
     password: str
 
 class User(UserBase):
     id: int
-    # --- THIS LINE WAS REMOVED ---
-    # is_active: bool 
+    is_admin: bool
+    subscription_expiry: Optional[datetime.datetime] = None
     simulations: list[Simulation] = []
     materials: list[Material] = []
     tools: list[Tool] = []
 
     class Config:
-        orm_mode = True
+        from_attributes = True
+
+# --- Admin Schemas ---
+class AdminUserCreate(BaseModel):
+    email: EmailStr
+    password: str
+    is_admin: Optional[bool] = False
+    subscription_days: Optional[int] = 30
+
+class AdminUserUpdate(BaseModel):
+    subscription_expiry: Optional[datetime.datetime] = None
+    is_admin: Optional[bool] = None
+
+class AdminUserPasswordReset(BaseModel):
+    new_password: str
+
+# --- NEW: Access Request Schemas ---
+class AccessRequestCreate(BaseModel):
+    email: EmailStr
+    name: str
+    company: str
+
+class AccessRequest(AccessRequestCreate):
+    id: int
+    status: str
+    request_date: datetime.datetime
+
+    class Config:
+        from_attributes = True
+# -----------------------------------
