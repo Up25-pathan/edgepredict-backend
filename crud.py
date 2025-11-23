@@ -61,21 +61,16 @@ def admin_reset_user_password(db: Session, user_id: int, new_password: str):
     db.commit()
     return db_user
 
-# --- NEW: Function to delete a user ---
 def delete_user(db: Session, user_id: int):
     db_user = get_user(db, user_id)
     if not db_user:
         return None
-    
-    # Optional: You might want to also delete related simulations, tools, etc.
-    # For now, we just delete the user.
     db.delete(db_user)
     db.commit()
     return db_user
-# -----------------------------------
-
 
 # --- Access Request CRUD ---
+
 def create_access_request(db: Session, request: schemas.AccessRequestCreate):
     db_req = models.AccessRequest(
         email=request.email,
@@ -100,6 +95,7 @@ def update_access_request_status(db: Session, request_id: int, status: str):
     return db_req
 
 # --- Simulation CRUD ---
+
 def create_user_simulation(db: Session, simulation: schemas.SimulationCreate, user_id: int):
     db_simulation = models.Simulation(**simulation.dict(), owner_id=user_id)
     db.add(db_simulation)
@@ -107,7 +103,6 @@ def create_user_simulation(db: Session, simulation: schemas.SimulationCreate, us
     db.refresh(db_simulation)
     return db_simulation
 
-# --- NEW: Delete Simulation ---
 def delete_simulation(db: Session, simulation_id: int):
     db_simulation = db.query(models.Simulation).filter(models.Simulation.id == simulation_id).first()
     if db_simulation:
@@ -115,15 +110,20 @@ def delete_simulation(db: Session, simulation_id: int):
         db.commit()
         return db_simulation
     return None
-# ------------------------------
 
 # --- Material CRUD ---
+
 def get_materials_by_user(db: Session, user_id: int):
     return db.query(models.Material).filter(models.Material.owner_id == user_id).all()
 
 def create_user_material(db: Session, material: schemas.MaterialCreate, user_id: int):
-    properties_json_string = json.dumps(material.properties)
-    
+    # Ensure properties are stored as JSON string
+    properties_data = material.properties
+    if not isinstance(properties_data, str):
+        properties_json_string = json.dumps(properties_data)
+    else:
+        properties_json_string = properties_data
+
     db_material = models.Material(
         name=material.name, 
         properties=properties_json_string,
@@ -134,7 +134,16 @@ def create_user_material(db: Session, material: schemas.MaterialCreate, user_id:
     db.refresh(db_material)
     return db_material
 
+def delete_material(db: Session, material_id: int):
+    db_material = db.query(models.Material).filter(models.Material.id == material_id).first()
+    if db_material:
+        db.delete(db_material)
+        db.commit()
+        return db_material
+    return None
+
 # --- Tool CRUD ---
+
 def get_tools_by_user(db: Session, user_id: int):
     return db.query(models.Tool).filter(models.Tool.owner_id == user_id).all()
 
