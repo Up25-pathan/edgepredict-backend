@@ -1,8 +1,8 @@
-from pydantic import BaseModel, EmailStr
-from typing import Optional, Any
+from pydantic import BaseModel, EmailStr, Field
+from typing import Optional, List, Any, Dict
 import datetime
 
-# --- Tool Schemas ---
+# --- Tool & Material Schemas ---
 class ToolBase(BaseModel):
     name: str
     tool_type: Optional[str] = None
@@ -14,14 +14,12 @@ class Tool(ToolBase):
     id: int
     file_path: str
     owner_id: int
-
     class Config:
         from_attributes = True
 
-# --- Material Schemas ---
 class MaterialBase(BaseModel):
     name: str
-    properties: Any
+    properties: Any # FIX: Changed from 'str' to 'Any' to handle parsed JSON
 
 class MaterialCreate(MaterialBase):
     pass
@@ -29,27 +27,66 @@ class MaterialCreate(MaterialBase):
 class Material(MaterialBase):
     id: int
     owner_id: int
-    properties: str 
-
+    properties: Any # FIX: Changed from 'str' to 'Any'
     class Config:
         from_attributes = True
 
-# --- Simulation Schemas ---
-class SimulationBase(BaseModel):
+# --- NEW R&D SIMULATION PAYLOAD SCHEMAS ---
+class SimulationParameters(BaseModel):
+    num_steps: int
+    time_step_duration_s: float
+
+class SPHParameters(BaseModel):
+    smoothing_radius_m: float
+    gas_stiffness: float
+    viscosity: float
+
+class WorkpieceSetup(BaseModel):
+    min_corner: List[float]
+    max_corner: List[float]
+
+class MillingParams(BaseModel):
+    spindle_speed_rpm: float
+    feed_rate_mm_per_rev: float
+    tool_axis: List[float]
+    feed_direction: List[float]
+    ambient_temperature_C: float
+
+class TurningParams(BaseModel):
+    sliding_velocity_m_s: float
+    strain_rate: float
+    ambient_temperature_C: float
+
+class LegacyCFDParams(BaseModel):
+    enable_cfd: bool
+    rake_angle_degrees: Optional[float] = 0.0
+
+# The Master Request Object
+class SimulationRequest(BaseModel):
     name: str
-    description: Optional[str] = None
+    description: str
+    tool_id: int
+    material_id: int
+    machining_type: str  # 'milling' or 'turning'
+    
+    simulation_parameters: SimulationParameters
+    
+    turning_params: Optional[TurningParams] = None
+    milling_params: Optional[MillingParams] = None
+    legacy_cfd_parameters: Optional[LegacyCFDParams] = None
+    sph_parameters: Optional[SPHParameters] = None
+    workpiece_setup: Optional[WorkpieceSetup] = None
 
-class SimulationCreate(SimulationBase):
-    pass
-
-class Simulation(SimulationBase):
+# --- DB Response Schemas ---
+class Simulation(BaseModel):
     id: int
-    owner_id: int
-    tool_id: Optional[int] = None
+    name: str
+    description: str
     status: str
     results: Optional[str] = None
-    material_properties: Optional[str] = None
-
+    owner_id: int
+    tool_id: Optional[int] = None
+    material_id: Optional[int] = None # FIX: Added material_id to response
     class Config:
         from_attributes = True
 
@@ -67,7 +104,6 @@ class User(UserBase):
     simulations: list[Simulation] = []
     materials: list[Material] = []
     tools: list[Tool] = []
-
     class Config:
         from_attributes = True
 
@@ -85,7 +121,7 @@ class AdminUserUpdate(BaseModel):
 class AdminUserPasswordReset(BaseModel):
     new_password: str
 
-# --- NEW: Access Request Schemas ---
+# --- Access Request Schemas ---
 class AccessRequestCreate(BaseModel):
     email: EmailStr
     name: str
@@ -95,7 +131,5 @@ class AccessRequest(AccessRequestCreate):
     id: int
     status: str
     request_date: datetime.datetime
-
     class Config:
         from_attributes = True
-# -----------------------------------
