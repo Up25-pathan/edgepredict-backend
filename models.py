@@ -8,12 +8,10 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 class User(Base):
     __tablename__ = "users"
-
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     salt = Column(String)
-    
     is_admin = Column(Boolean, default=False)
     subscription_expiry = Column(DateTime, nullable=True)
 
@@ -23,18 +21,15 @@ class User(Base):
 
 class AccessRequest(Base):
     __tablename__ = "access_requests"
-
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, index=True)
     name = Column(String)
     company = Column(String)
     status = Column(String, default="PENDING")
-    # --- FIX: Use naive datetime ---
     request_date = Column(DateTime, default=datetime.datetime.now)
 
 class Simulation(Base):
     __tablename__ = "simulations"
-
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
     description = Column(String)
@@ -44,23 +39,24 @@ class Simulation(Base):
     
     owner_id = Column(Integer, ForeignKey("users.id"))
     tool_id = Column(Integer, ForeignKey("tools.id"), nullable=True)
+    # FIX: Added missing material_id column
+    material_id = Column(Integer, ForeignKey("materials.id"), nullable=True)
 
     owner = relationship("User", back_populates="simulations")
     tool = relationship("Tool")
+    material = relationship("Material")
 
 class Material(Base):
     __tablename__ = "materials"
-
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
-    properties = Column(String)
+    properties = Column(String) # Stored as JSON string in SQLite
     owner_id = Column(Integer, ForeignKey("users.id"))
 
     owner = relationship("User", back_populates="materials")
 
 class Tool(Base):
     __tablename__ = "tools"
-
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
     tool_type = Column(String)
