@@ -24,8 +24,9 @@ celery.conf.update(
     accept_content=['json']
 )
 
-@celery.task
-def run_simulation_task(simulation_id, run_dir):
+# FIX: Added bind=True to explicitly handle the task instance
+@celery.task(bind=True)
+def run_simulation_task(self, simulation_id, run_dir):
     """
     Celery task to run a simulation in a Docker container.
     """
@@ -50,7 +51,7 @@ def run_simulation_task(simulation_id, run_dir):
             "/data/input.json"
         ]
 
-        print(f"Running command: {' '.join(docker_command)}")
+        print(f"[Task {self.request.id}] Running command: {' '.join(docker_command)}")
         
         process = subprocess.run(
             docker_command, 
@@ -109,17 +110,11 @@ def run_simulation_task(simulation_id, run_dir):
             db.rollback()
             
     finally:
-        # --- 4. Clean up Run Directory (DISABLED FOR DEBUGGING) ---
+        # --- 4. Clean up Run Directory (Disabled for Debugging) ---
         if os.path.exists(run_dir):
              db.refresh(db_simulation)
-             if db_simulation.status == "COMPLETED":
-                 # try:
-                 #     shutil.rmtree(run_dir)
-                 #     print(f"Cleaned up {run_dir}")
-                 # except Exception as e:
-                 #     print(f"Error cleaning up directory {run_dir}: {e}")
-                 print(f"DEBUG MODE: Keeping run directory {run_dir} for inspection.")
-             else:
-                 print(f"Keeping run directory {run_dir} for debugging (Status: {db_simulation.status})")
+             # For R&D, keeping the directory is often useful. 
+             # Uncomment the delete block below for production.
+             print(f"DEBUG: Preserving run directory {run_dir}")
         
         db.close()
